@@ -182,7 +182,7 @@ void FileJournal::_check_disk_write_cache() const
     goto done;
   }
 
-  hdparm_cmd << "/sbin/hdparm -W " << fn;
+  hdparm_cmd << "hdparm -W " << fn;
   fp = popen(hdparm_cmd.str().c_str(), "r");
   if (!fp) {
     dout(10) << "_check_disk_write_cache: failed to run /sbin/hdparm: NOT "
