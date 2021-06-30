@@ -23,6 +23,16 @@ import cephfs
 import rados
 
 
+def to_bytes(param):
+     '''
+     Helper method that returns byte representation of the given parameter.
+     '''
+     if isinstance(param, str):
+         return param.encode()
+     else:
+         return str(param).encode()
+
+
 class RadosError(Exception):
     """
     Something went wrong talking to Ceph with librados
@@ -181,7 +191,7 @@ class RankEvicter(threading.Thread):
     def run(self):
         try:
             self._evict()
-        except Exception, e:
+        except Exception as e:
             self.success = False
             self.exception = e
         else:
@@ -250,7 +260,7 @@ class CephFSVolumeClient(object):
         # from any other manila-share services that are loading this module.
         # We could use pid, but that's unnecessary weak: generate a
         # UUID
-        self._id = struct.unpack(">Q", uuid.uuid1().get_bytes()[0:8])[0]
+        self._id = struct.unpack(">Q", uuid.uuid1().bytes[0:8])[0]
 
         # TODO: version the on-disk structures
 
@@ -598,7 +608,7 @@ class CephFSVolumeClient(object):
             try:
                 self.fs.stat(subpath)
             except cephfs.ObjectNotFound:
-                self.fs.mkdir(subpath, 0755)
+                self.fs.mkdir(subpath, 0o755)
 
     def create_volume(self, volume_path, size=None, data_isolated=False):
         """
@@ -618,7 +628,7 @@ class CephFSVolumeClient(object):
         self._mkdir_p(path)
 
         if size is not None:
-            self.fs.setxattr(path, 'ceph.quota.max_bytes', size.__str__(), 0)
+            self.fs.setxattr(path, 'ceph.quota.max_bytes', to_bytes(size), 0)
 
         # data_isolated means create a separate pool for this volume
         if data_isolated:
@@ -630,17 +640,18 @@ class CephFSVolumeClient(object):
                 self._rados_command("mds add_data_pool", {
                     'pool': pool_name
                 })
-            self.fs.setxattr(path, 'ceph.dir.layout.pool', pool_name, 0)
+            self.fs.setxattr(path, 'ceph.dir.layout.pool', to_bytes(pool_name), 0)
 
         # enforce security isolation, use seperate namespace for this volume
         namespace = "{0}{1}".format(self.pool_ns_prefix, volume_path.volume_id)
         log.info("create_volume: {0}, using rados namespace {1} to isolate data.".format(volume_path, namespace))
-        self.fs.setxattr(path, 'ceph.dir.layout.pool_namespace', namespace, 0)
+        self.fs.setxattr(path, 'ceph.dir.layout.pool_namespace',
+                         to_bytes(namespace), 0)
 
         # Create a volume meta file, if it does not already exist, to store
         # data about auth ids having access to the volume
         fd = self.fs.open(self._volume_metadata_path(volume_path),
-                          os.O_CREAT, 0755)
+                          os.O_CREAT, 0o755)
         self.fs.close(fd)
 
         return {
@@ -743,7 +754,7 @@ class CephFSVolumeClient(object):
         on the requested path, keep checking parents until we find it.
         """
         try:
-            result = self.fs.getxattr(path, attr)
+            result = self.fs.getxattr(path, attr).decode()
             if result == "":
                 # Annoying!  cephfs gives us empty instead of an error when attr not found
                 raise cephfs.NoData()
@@ -773,7 +784,7 @@ class CephFSVolumeClient(object):
         read_bytes = self.fs.read(fd, 0, 4096 * 1024)
         self.fs.close(fd)
         if read_bytes:
-            return json.loads(read_bytes)
+            return json.loads(read_bytes.decode())
         else:
             return None
 
@@ -781,7 +792,7 @@ class CephFSVolumeClient(object):
         serialized = json.dumps(data)
         fd = self.fs.open(path, "w")
         try:
-            self.fs.write(fd, serialized, 0)
+            self.fs.write(fd, to_bytes(serialized), 0)
             self.fs.fsync(fd, 0)
         finally:
             self.fs.close(fd)
@@ -790,7 +801,7 @@ class CephFSVolumeClient(object):
         @contextmanager
         def fn():
             while(1):
-                fd = self.fs.open(path, os.O_CREAT, 0755)
+                fd = self.fs.open(path, os.O_CREAT, 0o755)
                 self.fs.flock(fd, fcntl.LOCK_EX, self._id)
 
                 # The locked file will be cleaned up sometime. It could be
@@ -1023,7 +1034,7 @@ class CephFSVolumeClient(object):
         # First I need to work out what the data pool is for this share:
         # read the layout
         pool_name = self._get_ancestor_xattr(path, "ceph.dir.layout.pool")
-        namespace = self.fs.getxattr(path, "ceph.dir.layout.pool_namespace")
+        namespace = self.fs.getxattr(path, "ceph.dir.layout.pool_namespace").decode()
 
         # Now construct auth capabilities that give the guest just enough
         # permissions to access the share
@@ -1185,7 +1196,7 @@ class CephFSVolumeClient(object):
         client_entity = "client.{0}".format(auth_id)
         path = self._get_path(volume_path)
         pool_name = self._get_ancestor_xattr(path, "ceph.dir.layout.pool")
-        namespace = self.fs.getxattr(path, "ceph.dir.layout.pool_namespace")
+        namespace = self.fs.getxattr(path, "ceph.dir.layout.pool_namespace").decode()
 
         # The auth_id might have read-only or read-write mount access for the
         # volume path.
@@ -1281,7 +1292,7 @@ class CephFSVolumeClient(object):
             if decode:
                 if outbuf:
                     try:
-                        return json.loads(outbuf)
+                        return json.loads(outbuf.decode())
                     except (ValueError, TypeError):
                         raise RadosError("Invalid JSON output for command {0}".format(argdict))
                 else:
@@ -1290,12 +1301,11 @@ class CephFSVolumeClient(object):
                 return outbuf
 
     def get_used_bytes(self, volume_path):
-        return int(self.fs.getxattr(self._get_path(volume_path), "ceph.dir.rbytes"))
+        return int(self.fs.getxattr(self._get_path(volume_path), "ceph.dir.rbytes").decode())
 
     def set_max_bytes(self, volume_path, max_bytes):
         self.fs.setxattr(self._get_path(volume_path), 'ceph.quota.max_bytes',
-                         max_bytes.__str__() if max_bytes is not None else "0",
-                         0)
+                         to_bytes(max_bytes if max_bytes else 0), 0)
 
     def _snapshot_path(self, dir_path, snapshot_name):
         return os.path.join(
@@ -1304,7 +1314,7 @@ class CephFSVolumeClient(object):
 
     def _snapshot_create(self, dir_path, snapshot_name):
         # TODO: raise intelligible exception for clusters where snaps are disabled
-        self.fs.mkdir(self._snapshot_path(dir_path, snapshot_name), 0755)
+        self.fs.mkdir(self._snapshot_path(dir_path, snapshot_name), 0o755)
 
     def _snapshot_destroy(self, dir_path, snapshot_name):
         """

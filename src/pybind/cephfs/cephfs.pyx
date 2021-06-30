@@ -15,10 +15,9 @@ import errno
 import os
 import sys
 
-# Are we running Python 2.x
-_python2 = sys.hexversion < 0x03000000
 
-if _python2:
+# Are we running Python 2.x
+if sys.version_info[0] < 3:
     str_type = basestring
 else:
     str_type = str
@@ -556,11 +555,14 @@ cdef class LibCephFS(object):
         if not dirent:
             return None
 
+        d_name = (dirent.d_name
+                  if sys.version[0:2] == '2.'
+                  else dirent.d_name.decode())
         return DirEntry(d_ino=dirent.d_ino,
                         d_off=dirent.d_off,
                         d_reclen=dirent.d_reclen,
                         d_type=dirent.d_type,
-                        d_name=dirent.d_name)
+                        d_name=d_name)
 
     def closedir(self, DirResult dir_handler):
         self.require_state("mounted")
@@ -613,7 +615,7 @@ cdef class LibCephFS(object):
 
         if not isinstance(mode, int):
             raise TypeError('mode must be an int')
-        if isinstance(flags, basestring):
+        if isinstance(flags, str):
             flags = cstr(flags, 'flags')
             cephfs_flags = 0
             if flags == '':
@@ -911,4 +913,3 @@ cdef class LibCephFS(object):
                 return (ret, b"", "")
         finally:
             free(_cmd)
-
